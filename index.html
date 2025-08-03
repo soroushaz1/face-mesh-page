@@ -178,12 +178,28 @@
       0% { transform: translate(0, 0); opacity: 1; }
       100% { transform: translate(200px, -300px); opacity: 0; }
     }
+
+    /* Error message styling */
+    #error-message {
+      position: absolute;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: rgba(255, 0, 0, 0.8);
+      color: white;
+      padding: 10px 20px;
+      border-radius: 8px;
+      display: none;
+    }
   </style>
 </head>
 <body>
 
   <!-- Particle effect (background animation) -->
   <div class="particles"></div>
+
+  <!-- Error message if webcam access fails -->
+  <div id="error-message">Please allow access to your webcam to proceed.</div>
 
   <!-- Container with UI elements -->
   <div class="container">
@@ -212,6 +228,7 @@
     const startCamBtn  = document.getElementById('startCamBtn');
     const toggleMeshBtn= document.getElementById('toggleMeshBtn');
     const downloadBtn  = document.getElementById('downloadBtn');
+    const errorMessage = document.getElementById('error-message');
 
     // State
     let stream         = null;
@@ -275,19 +292,29 @@
         stream.getTracks().forEach(t => t.stop());
         stopLoop = true;
       }
-      const deviceId = selectCam.value;
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
-      });
-      videoEl.srcObject = stream;
-      await videoEl.play();
 
-      // Kick off our own frame loop feeding FaceMesh
-      stopLoop = false;
-      (async function frameLoop() {
-        await faceMesh.send({ image: videoEl });
-        if (!stopLoop) requestAnimationFrame(frameLoop);
-      })();
+      const deviceId = selectCam.value;
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+        videoEl.srcObject = stream;
+        await videoEl.play();
+
+        // Hide error message if camera is accessed successfully
+        errorMessage.style.display = 'none';
+
+        // Kick off our own frame loop feeding FaceMesh
+        stopLoop = false;
+        (async function frameLoop() {
+          await faceMesh.send({ image: videoEl });
+          if (!stopLoop) requestAnimationFrame(frameLoop);
+        })();
+      } catch (error) {
+        console.error('Camera access error:', error);
+        errorMessage.style.display = 'block'; // Show error message
+      }
     });
 
     // Handle results & draw
