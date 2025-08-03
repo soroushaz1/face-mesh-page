@@ -296,9 +296,13 @@
       const deviceId = selectCam.value;
 
       try {
-        // Remove all constraints and allow the browser to choose the best available settings
+        // Let the browser choose the best available settings
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+          video: { 
+            deviceId: { exact: deviceId }, 
+            width: { ideal: 1280 }, 
+            height: { ideal: 720 }
+          }
         });
         videoEl.srcObject = stream;
         await videoEl.play();
