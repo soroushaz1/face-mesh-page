@@ -216,11 +216,43 @@
     <canvas id="overlay"></canvas>
 
     <!-- Buy Me a Coffee Button -->
-    <button id="buyMeACoffeeBtn" onclick="window.open('https://buymeacoffee.com/soroushzenw', '_blank')">Support Me on BuyMeACoffee</button>
+    <button id="buyMeACoffeeBtn" onclick="window.open('https://buymeacoffee.com/soroushzenw', '_blank')">
+      Support Me on BuyMeACoffee
+    </button>
   </div>
 
   <script>
-    // DOM refs
+    // ---- 1) POLYFILL getUserMedia + enumerateDevices ----
+    (function() {
+      if (!navigator.mediaDevices) {
+        navigator.mediaDevices = {};
+      }
+      if (!navigator.mediaDevices.getUserMedia) {
+        const legacy = navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+        if (legacy) {
+          navigator.mediaDevices.getUserMedia = constraints =>
+            new Promise((resolve, reject) =>
+              legacy.call(navigator, resolve, reject, constraints)
+            );
+        } else {
+          navigator.mediaDevices.getUserMedia = () =>
+            Promise.reject(new Error('getUserMedia is not implemented'));
+        }
+      }
+      if (!navigator.mediaDevices.enumerateDevices) {
+        navigator.mediaDevices.enumerateDevices = () => {
+          console.warn('enumerateDevices() not supported.');
+          return Promise.resolve([]);
+        };
+      }
+    })();
+
+    // Warn if not secure context
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+      console.warn('⚠️ getUserMedia will only work on HTTPS (or http://localhost).');
+    }
+
+    // ---- DOM refs & state ----
     const videoEl      = document.getElementById('video');
     const canvasEl     = document.getElementById('overlay');
     const ctx          = canvasEl.getContext('2d');
@@ -230,37 +262,27 @@
     const downloadBtn  = document.getElementById('downloadBtn');
     const errorMessage = document.getElementById('error-message');
 
-    // State
-    let stream         = null;
-    let stopLoop       = false;
-    let showMesh       = false;
-    let lastLM         = null;
-    let lastTriangles  = null;
+    let stream        = null;
+    let stopLoop      = false;
+    let showMesh      = false;
+    let lastLM        = null;
+    let lastTriangles = null;
 
-    // Particle Effect Generation
+    // ---- Particle effect ----
     function createParticle() {
-      const particle = document.createElement('div');
-      particle.classList.add('particle');
-      document.querySelector('.particles').appendChild(particle);
-
+      const p = document.createElement('div');
+      p.classList.add('particle');
       const size = Math.random() * 5 + 2;
-      const left = Math.random() * 100 + '%';
-      const animationDuration = Math.random() * 3 + 2;
-
-      particle.style.width = `${size}px`;
-      particle.style.height = `${size}px`;
-      particle.style.left = left;
-      particle.style.animationDuration = `${animationDuration}s`;
-
-      setTimeout(() => {
-        particle.remove();
-      }, animationDuration * 1000);
+      p.style.width = `${size}px`;
+      p.style.height = `${size}px`;
+      p.style.left = Math.random() * 100 + '%';
+      p.style.animationDuration = `${Math.random() * 3 + 2}s`;
+      document.querySelector('.particles').appendChild(p);
+      setTimeout(() => p.remove(), parseFloat(p.style.animationDuration) * 1000);
     }
-
-    // Create particles every 100ms
     setInterval(createParticle, 100);
 
-    // Initialize MediaPipe FaceMesh
+    // ---- MediaPipe FaceMesh init ----
     const faceMesh = new FaceMesh({
       locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
     });
@@ -271,46 +293,40 @@
     });
     faceMesh.onResults(onResults);
 
-    // List available video input devices
+    // ---- List cameras safely ----
     async function listCameras() {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const cams = devices.filter(d => d.kind === 'videoinput');
-      selectCam.innerHTML = '';
-      cams.forEach((cam, i) => {
-        const opt = document.createElement('option');
-        opt.value = cam.deviceId;
-        opt.text  = cam.label || `Camera ${i+1}`;
-        selectCam.appendChild(opt);
-      });
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cams = devices.filter(d => d.kind === 'videoinput');
+        selectCam.innerHTML = cams.map((cam,i) =>
+          `<option value="${cam.deviceId}">${cam.label||'Camera '+(i+1)}</option>`
+        ).join('');
+      } catch (err) {
+        console.warn('Could not list cameras:', err);
+        selectCam.innerHTML = `<option value="">Default camera</option>`;
+      }
     }
     listCameras();
 
-    // Start camera with chosen deviceId
+    // ---- Start camera & feed FaceMesh ----
     startCamBtn.addEventListener('click', async () => {
-      // Stop existing tracks & loop
       if (stream) {
         stream.getTracks().forEach(t => t.stop());
         stopLoop = true;
       }
-
-      const deviceId = selectCam.value;
-
+      const deviceId = selectCam.value || undefined;
       try {
-        // Let the browser choose the best available settings
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { 
-            deviceId: { exact: deviceId }, 
-            width: { ideal: 1280 }, 
+          video: {
+            deviceId: deviceId ? { exact: deviceId } : undefined,
+            width: { ideal: 1280 },
             height: { ideal: 720 }
           }
         });
         videoEl.srcObject = stream;
         await videoEl.play();
-
-        // Hide error message if camera is accessed successfully
         errorMessage.style.display = 'none';
 
-        // Kick off our own frame loop feeding FaceMesh
         stopLoop = false;
         (async function frameLoop() {
           await faceMesh.send({ image: videoEl });
@@ -318,11 +334,11 @@
         })();
       } catch (error) {
         console.error('Camera access error:', error);
-        errorMessage.style.display = 'block'; // Show error message
+        errorMessage.style.display = 'block';
       }
     });
 
-    // Handle results & draw
+    // ---- Draw & triangulate on each FaceMesh result ----
     function onResults(results) {
       lastLM = results.multiFaceLandmarks?.[0] || null;
       canvasEl.width  = videoEl.videoWidth;
@@ -333,54 +349,44 @@
       ctx.drawImage(results.image, 0,0, canvasEl.width,canvasEl.height);
 
       if (lastLM) {
-        // 2D points for triangulation
-        const pts = lastLM.map(lm => [
-          lm.x * canvasEl.width,
-          lm.y * canvasEl.height
-        ]);
+        const pts = lastLM.map(lm => [ lm.x * canvasEl.width, lm.y * canvasEl.height ]);
         lastTriangles = Delaunator.from(pts).triangles;
 
-        // Fill triangles if toggled
         if (showMesh) {
           ctx.fillStyle = 'rgba(0,255,0,0.3)';
           for (let i=0; i<lastTriangles.length; i+=3) {
-            const a = lastTriangles[i],
-                  b = lastTriangles[i+1],
-                  c = lastTriangles[i+2];
+            const [a,b,c] = [lastTriangles[i], lastTriangles[i+1], lastTriangles[i+2]];
             ctx.beginPath();
-            ctx.moveTo(pts[a][0], pts[a][1]);
-            ctx.lineTo(pts[b][0], pts[b][1]);
-            ctx.lineTo(pts[c][0], pts[c][1]);
+            ctx.moveTo(...pts[a]);
+            ctx.lineTo(...pts[b]);
+            ctx.lineTo(...pts[c]);
             ctx.closePath();
             ctx.fill();
           }
         }
 
-        // Always draw landmark dots
         ctx.fillStyle = 'lime';
         for (const lm of lastLM) {
-          const x = lm.x * canvasEl.width,
-                y = lm.y * canvasEl.height;
+          const x = lm.x * canvasEl.width, y = lm.y * canvasEl.height;
           ctx.beginPath();
-          ctx.arc(x,y,2,0,2*Math.PI);
+          ctx.arc(x, y, 2, 0, 2*Math.PI);
           ctx.fill();
         }
       }
       ctx.restore();
     }
 
-    // Toggle mesh on/off
+    // ---- Toggle mesh visibility ----
     toggleMeshBtn.addEventListener('click', () => {
       showMesh = !showMesh;
       toggleMeshBtn.textContent = showMesh ? 'Hide Mesh' : 'Show Mesh';
     });
 
-    // Download OBJ + MTL + texture
+    // ---- Download OBJ + MTL + texture ----
     downloadBtn.addEventListener('click', async () => {
       if (!lastLM || !lastTriangles) {
         return alert('No face mesh detected yet!');
       }
-      // Capture texture
       const texCanvas = document.createElement('canvas');
       texCanvas.width  = videoEl.videoWidth;
       texCanvas.height = videoEl.videoHeight;
@@ -388,22 +394,20 @@
       texCtx.drawImage(videoEl, 0,0, texCanvas.width,texCanvas.height);
       const texBlob = await new Promise(res => texCanvas.toBlob(res,'image/png'));
 
-      // Build OBJ (v, vt, f)
       const verts = lastLM.map(lm =>
         `v ${lm.x.toFixed(6)} ${lm.y.toFixed(6)} ${lm.z.toFixed(6)}`
       );
-      const uvs = lastLM.map(lm => {
-        const u = lm.x.toFixed(6);
-        const v = (1 - lm.y).toFixed(6);
-        return `vt ${u} ${v}`;
-      });
+      const uvs = lastLM.map(lm =>
+        `vt ${lm.x.toFixed(6)} ${(1-lm.y).toFixed(6)}`
+      );
       const faces = [];
       for (let i=0; i<lastTriangles.length; i+=3) {
-        const a = lastTriangles[i]   +1,
-              b = lastTriangles[i+1] +1,
-              c = lastTriangles[i+2] +1;
+        const a = lastTriangles[i]+1,
+              b = lastTriangles[i+1]+1,
+              c = lastTriangles[i+2]+1;
         faces.push(`f ${a}/${a} ${b}/${b} ${c}/${c}`);
       }
+
       const objContent = [
         `mtllib facemesh.mtl`,
         `o FaceMesh`,
@@ -418,15 +422,14 @@
         `map_Kd texture.png`
       ].join('\n');
 
-      // Download helpers
-      function download(blob, name) {
+      const download = (blob, name) => {
         const url = URL.createObjectURL(blob);
         const a   = document.createElement('a');
         a.href    = url;
         a.download= name;
         a.click();
         URL.revokeObjectURL(url);
-      }
+      };
 
       download(texBlob,                    'texture.png');
       download(new Blob([mtlContent], {type:'text/plain'}), 'facemesh.mtl');
